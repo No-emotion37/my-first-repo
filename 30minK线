@@ -1,0 +1,84 @@
+//@version=6
+strategy("ETH Wyckoff Entry/Exit (3-Day Hold Max + TP/SL)", overlay=true, default_qty_type=strategy.percent_of_equity, default_qty_value=100)
+
+// === INPUTS ===
+holdDuration = input.int(3, "Max Hold Duration (Days)", minval=1)
+volMultiplier = input.float(1.5, "Volume Spike Multiplier")
+rangeLength = input.int(50, "Range Lookback Length")
+
+// Risk Management
+takeProfitPerc = input.float(5.0, "Take Profit (%)", step=0.1)
+stopLossPerc = input.float(2.0, "Stop Loss (%)", step=0.1)
+
+timeFrameInMinutes = "60"
+
+// === PRICE & VOLUME ===
+closePrice = request.security(syminfo.tickerid, timeFrameInMinutes, close)
+highPrice = request.security(syminfo.tickerid, timeFrameInMinutes, high)
+lowPrice  = request.security(syminfo.tickerid, timeFrameInMinutes, low)
+volumeData = request.security(syminfo.tickerid, timeFrameInMinutes, volume)
+
+// === RANGE DETECTION ===
+highRange = ta.highest(highPrice, rangeLength)
+lowRange = ta.lowest(lowPrice, rangeLength)
+rangeMid = (highRange + lowRange) / 2
+
+// === VOLUME SIGNALS ===
+avgVol = ta.sma(volumeData, rangeLength)
+volSpike = volumeData > avgVol * volMultiplier
+
+// === WYCKOFF STYLE SIGNAL CONDITIONS ===
+// 1. Accumulation Phase (Spring)
+springCondition = lowPrice < lowRange * 0.99 and closePrice > lowPrice + (highRange - lowRange) * 0.25 and volSpike
+
+// 2. Breakout Confirmation (Sign of Strength - SOS)
+sosCondition = closePrice > rangeMid and closePrice > ta.highest(closePrice, 10)[1] and volSpike
+
+// 3. Distribution Phase (Upthrust)
+upthrustCondition = highPrice > highRange * 1.01 and closePrice < highPrice - (highRange - lowRange) * 0.25 and volSpike
+
+// === ENTRY/EXIT RULES ===
+var float entryPrice = na
+var int entryBar = na
+
+longCondition = springCondition or sosCondition
+shortCondition = upthrustCondition
+
+if (longCondition and na(entryBar))
+    strategy.entry("Wyckoff Long", strategy.long)
+    entryPrice := close
+    entryBar := bar_index
+
+if (shortCondition and na(entryBar))
+    strategy.entry("Wyckoff Short", strategy.short)
+    entryPrice := close
+    entryBar := bar_index
+
+// Exit Rules
+holdBars = holdDuration * 24
+
+// Long exit conditions
+tpLong = entryPrice * (1 + takeProfitPerc / 100)
+slLong = entryPrice * (1 - stopLossPerc / 100)
+exitLong = (close >= tpLong or close <= slLong or (bar_index - entryBar >= holdBars))
+
+// Short exit conditions
+tpShort = entryPrice * (1 - takeProfitPerc / 100)
+slShort = entryPrice * (1 + stopLossPerc / 100)
+exitShort = (close <= tpShort or close >= slShort or (bar_index - entryBar >= holdBars))
+
+if (not na(entryBar))
+    if strategy.position_size > 0 and exitLong
+        strategy.close("Wyckoff Long")
+        entryBar := na
+        entryPrice := na
+    if strategy.position_size < 0 and exitShort
+        strategy.close("Wyckoff Short")
+        entryBar := na
+        entryPrice := na
+
+// Plot signals
+plotshape(longCondition, title="Buy Signal", location=location.belowbar, color=color.green, style=shape.triangleup, size=size.small)
+plotshape(shortCondition, title="Sell Signal", location=location.abovebar, color=color.red, style=shape.triangledown, size=size.small)
+
+plot(rangeMid, title="Range Mid", color=color.gray, style=plot.style_line, linewidth=1)
